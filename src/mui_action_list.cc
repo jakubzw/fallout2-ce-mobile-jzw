@@ -1,11 +1,14 @@
 #include "mui_screens.h"
 
 #include <algorithm>
+#include <cmath>
 #include <string>
 #include <utility>
 #include <vector>
 
+#include "art.h"
 #include "hud_layout.h"
+#include "mui.h"
 #include "object.h"
 #include "svga.h"
 #include "touch_hud.h"
@@ -64,6 +67,60 @@ namespace {
             }
         }
     };
+
+    // The game's watch over the target of a skill used again and again.
+    class SkillWaitScreen : public MuiScreen {
+    public:
+        SkillWaitScreen()
+        {
+            modal = false;
+        }
+
+        bool isActive() override
+        {
+            return target != nullptr;
+        }
+
+        void build(MuiContext& ui) override
+        {
+            MuiRect rect;
+            if (!muiObjectRect(target, &rect)) {
+                return;
+            }
+
+            const FrmId frmId(InterfaceFrameId::MouseCursorWaitWatch);
+
+            int frameCount = 1;
+            int fps = 10;
+            CacheEntry* handle;
+            Art* art = artLock(frmId, &handle);
+            if (art != nullptr) {
+                frameCount = std::max(1, artGetFrameCount(art));
+                fps = std::max(1, artGetFramesPerSecond(art));
+                artUnlock(handle);
+            }
+
+            int frame = static_cast<int>((SDL_GetTicks() * fps / 1000) % frameCount);
+
+            int width = 0;
+            int height = 0;
+            SDL_Texture* texture = muiArtTexture(frmId, frame, &width, &height);
+            if (texture == nullptr || width <= 0 || height <= 0) {
+                return;
+            }
+
+            // Whole pixels, not smaller than the game draws it, readable on
+            // a phone.
+            float scale = std::max(1.0f, std::floor(ui.dp(40.0f) / std::max(width, height)));
+            MuiRect icon = { rect.centerX() - width * scale / 2.0f, rect.centerY() - height * scale / 2.0f, width * scale, height * scale };
+            muiDrawTexture(texture, icon);
+        }
+
+        Object* target = nullptr;
+    };
+
+    SkillWaitScreen gSkillWaitScreen;
+    bool gSkillWaitPushed = false;
 
     ActionListScreen gActionListScreen;
 
@@ -278,6 +335,21 @@ void muiCloseActionList()
 bool muiIsActionListOpen(const std::string& id)
 {
     return gActionListScreen.open && gActionListScreen.id == id;
+}
+
+void muiSkillWaitShow(Object* target)
+{
+    gSkillWaitScreen.target = target;
+    if (!gSkillWaitPushed) {
+        // Over the map, under the HUD and the lists.
+        muiPush(&gSkillWaitScreen);
+        gSkillWaitPushed = true;
+    }
+}
+
+void muiSkillWaitHide()
+{
+    gSkillWaitScreen.target = nullptr;
 }
 
 } // namespace fallout

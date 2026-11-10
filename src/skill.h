@@ -43,6 +43,12 @@ char* skillGetDescription(Skill skill);
 char* skillGetAttributes(Skill skill);
 SkillDexFrmId skillGetFrmId(Skill skill);
 int skillUse(Object* obj, Object* target, Skill skill, int skillBonus);
+
+// CE: "Repeat until success" option of the skills list (lockpick, first aid,
+// doctor): the skill is used again and again until it succeeds or the player
+// taps the screen.
+bool skillRepeatIsEnabled();
+void skillRepeatSetEnabled(bool enabled);
 SkillStealResult skillsPerformStealing(Object* thief, Object* target, Object* item, int quantity, bool isPlanting, int* xpOverride);
 int skillGetGameDifficultyModifier(Skill skill);
 int skillUpdateLastUse(Skill skill);

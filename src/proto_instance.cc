@@ -17,15 +17,18 @@
 #include "display_monitor.h"
 #include "game.h"
 #include "game_dialog.h"
+#include "game_mouse.h"
 #include "game_sound.h"
 #include "geometry.h"
 #include "interface.h"
+#include "input.h"
 #include "interpreter_extra.h"
 #include "inventory.h"
 #include "item.h"
 #include "map.h"
 #include "message.h"
 #include "mui.h"
+#include "mui_screens.h"
 #include "object.h"
 #include "palette.h"
 #include "party_member.h"
@@ -38,7 +41,9 @@
 #include "skill.h"
 #include "stat.h"
 #include "string_utils.h"
+#include "svga.h"
 #include "tile.h"
+#include "touch.h"
 #include "worldmap.h"
 
 namespace fallout {
@@ -1977,8 +1982,8 @@ int objectUseContainer(Object* critter, Object* item)
     return 0;
 }
 
-// 0x49D078
-int objectUseSkillOn(Object* source, Object* target, Skill skill)
+// Single attempt of using a skill on a target (the original engine behavior).
+static int objectUseSkillOnOnce(Object* source, Object* target, Skill skill)
 {
     if (objectIsJammed(target)) {
         if (source == gDude) {
@@ -2016,6 +2021,172 @@ int objectUseSkillOn(Object* source, Object* target, Skill skill)
     }
 
     return 0;
+}
+
+// Maximum number of automatic attempts, a safety net against endless loops.
+static const int kSkillRepeatMaxAttempts = 100;
+
+// Real time between two attempts: the player sees the watch and has a moment
+// to tap the screen to stop.
+static const unsigned int kSkillRepeatPauseMs = 350;
+
+// Snapshot of the state used to detect whether a skill attempt succeeded.
+struct SkillRepeatState {
+    bool locked;
+    int hp;
+    int maxHp;
+    int crippledFlags;
+};
+
+static SkillRepeatState skillRepeatCaptureState(Object* target, Skill skill)
+{
+    SkillRepeatState state = {};
+    if (skill == SKILL_LOCKPICK) {
+        state.locked = objectIsLocked(target);
+    } else {
+        state.hp = critterGetStat(target, STAT_CURRENT_HIT_POINTS);
+        state.maxHp = critterGetStat(target, STAT_MAXIMUM_HIT_POINTS);
+        state.crippledFlags = target->data.critter.combat.results & DAM_CRIP;
+    }
+    return state;
+}
+
+// Returns true if there is still something the skill can fix.
+static bool skillRepeatIsApplicable(Object* target, Skill skill)
+{
+    if (skill == SKILL_LOCKPICK) {
+        return objectIsLocked(target) && !objectIsJammed(target);
+    }
+
+    if (critterIsDead(target)) {
+        return false;
+    }
+
+    if (critterGetStat(target, STAT_CURRENT_HIT_POINTS) < critterGetStat(target, STAT_MAXIMUM_HIT_POINTS)) {
+        return true;
+    }
+
+    // First aid cannot heal crippled limbs, only doctor can.
+    return skill == SKILL_DOCTOR && critterIsCrippled(target);
+}
+
+static bool skillRepeatSucceeded(Object* target, Skill skill, const SkillRepeatState& before)
+{
+    if (skill == SKILL_LOCKPICK) {
+        return before.locked && !objectIsLocked(target);
+    }
+
+    SkillRepeatState after = skillRepeatCaptureState(target, skill);
+    if (after.hp > before.hp) {
+        return true;
+    }
+
+    // Healed (removed) at least one crippling flag.
+    return (before.crippledFlags & ~after.crippledFlags) != 0;
+}
+
+// Waits [ms] drawing the frames of the game (the watch is animated), returns
+// true if the player stopped the repetition: tapped the screen, pressed a key
+// or the game is closing.
+static bool skillRepeatPause(unsigned int ms)
+{
+    const unsigned int start = getTicks();
+    while (getTicksBetween(getTicks(), start) < ms) {
+        sharedFpsLimiter.mark();
+
+        int keyCode = inputGetInput();
+        if (keyCode != -1 || touch_any_finger_down() || _game_user_wants_to_quit != GAME_QUIT_REQUEST_NONE) {
+            // The tap is only for stopping: it must not walk the dude.
+            touch_cancel_all();
+            inputBlockForTocks(300);
+            return true;
+        }
+
+        renderPresent();
+        sharedFpsLimiter.throttle();
+    }
+
+    return false;
+}
+
+// The watch over the target for as long as the repetition goes.
+class SkillRepeatIndicator {
+public:
+    explicit SkillRepeatIndicator(Object* target)
+    {
+        if (muiIsEnabled()) {
+            muiSkillWaitShow(target);
+        } else {
+            _previousCursor = gameMouseGetCursor();
+            gameMouseSetCursor(MOUSE_CURSOR_WAIT_WATCH);
+        }
+    }
+
+    ~SkillRepeatIndicator()
+    {
+        if (muiIsEnabled()) {
+            muiSkillWaitHide();
+        } else {
+            gameMouseSetCursor(_previousCursor);
+        }
+    }
+
+private:
+    MouseCursorType _previousCursor = MOUSE_CURSOR_ARROW;
+};
+
+// 0x49D078
+int objectUseSkillOn(Object* source, Object* target, Skill skill)
+{
+    const bool repeatable = source != nullptr
+        && skillRepeatIsEnabled()
+        && target != nullptr
+        && (skill == SKILL_LOCKPICK || skill == SKILL_FIRST_AID || skill == SKILL_DOCTOR)
+        && (skill == SKILL_LOCKPICK
+            ? (ProtoId(target).objectType() == OBJ_TYPE_ITEM || ProtoId(target).objectType() == OBJ_TYPE_SCENERY)
+            : ProtoId(target).objectType() == OBJ_TYPE_CRITTER);
+
+    if (!repeatable || !skillRepeatIsApplicable(target, skill)) {
+        return objectUseSkillOnOnce(source, target, skill);
+    }
+
+    // A finger still down from choosing the skill is not a stop.
+    touch_cancel_all();
+
+    SkillRepeatIndicator indicator(target);
+
+    int rc = 0;
+    for (int attempt = 0; attempt < kSkillRepeatMaxAttempts; attempt++) {
+        SkillRepeatState before = skillRepeatCaptureState(target, skill);
+        const int sourceHpBefore = critterGetStat(source, STAT_CURRENT_HIT_POINTS);
+
+        rc = objectUseSkillOnOnce(source, target, skill);
+        if (rc != 0) {
+            // Jammed, no script/skill handling, "too tired", etc.
+            break;
+        }
+
+        if (skillRepeatSucceeded(target, skill, before)) {
+            break;
+        }
+
+        // Stop if something interrupted us or there is nothing left to do.
+        if (isInCombat()
+            || critterIsDead(source)
+            || critterGetStat(source, STAT_CURRENT_HIT_POINTS) < sourceHpBefore
+            || !skillRepeatIsApplicable(target, skill)) {
+            break;
+        }
+
+        // Tap to stop; the pause also lets the watch animate. An attempt with
+        // no observable effect at all (e.g. an unscripted lock) ends by the
+        // attempts cap.
+        if (skillRepeatPause(kSkillRepeatPauseMs)) {
+            break;
+        }
+    }
+
+    return rc;
 }
 
 // 0x49D140

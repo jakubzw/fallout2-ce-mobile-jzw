@@ -131,18 +131,35 @@ static SkilldexRC skilldexChooseMobile(Object* target)
         { SKILL_REPAIR, MuiIcon::Repair },
     };
 
-    std::vector<MuiActionItem> items;
-    for (const Entry& entry : entries) {
-        char value[16];
-        snprintf(value, sizeof(value), "%d%%", skillGetValue(gDude, entry.skill));
-        items.push_back({ entry.icon, muiDecodeGameText(skillGetName(entry.skill)), muiDecodeUtf8(value) });
-    }
-
     MuiRect anchor;
     MuiRect avoid;
     muiPopupAnchor(target, HudElementId::Skills, &anchor, &avoid);
 
-    int index = muiChooseAction("skills", items, anchor, avoid);
+    int index;
+    while (true) {
+        std::vector<MuiActionItem> items;
+        for (const Entry& entry : entries) {
+            char value[16];
+            snprintf(value, sizeof(value), "%d%%", skillGetValue(gDude, entry.skill));
+            items.push_back({ entry.icon, muiDecodeGameText(skillGetName(entry.skill)), muiDecodeUtf8(value) });
+        }
+
+        // CE: Option below the skills: use lockpick, first aid and doctor
+        // again until they succeed.
+        items.push_back({ MuiIcon::Target,
+            U"Powtarzaj do skutku",
+            skillRepeatIsEnabled() ? U"Wł." : U"Wył." });
+
+        index = muiChooseAction("skills", items, anchor, avoid);
+        if (index != SKILLDEX_SKILL_COUNT) {
+            break;
+        }
+
+        // The option only toggles, the list stays.
+        soundPlayFile("ib1p1xx1");
+        skillRepeatSetEnabled(!skillRepeatIsEnabled());
+    }
+
     if (index < 0) {
         return SKILLDEX_RC_CANCELED;
     }

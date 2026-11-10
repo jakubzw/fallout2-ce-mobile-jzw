@@ -834,6 +834,19 @@ static void _show_skill_use_messages(Object* obj, Skill skill, Object* target, i
     }
 }
 
+// CE: Repeat until success, on by default.
+static bool gSkillRepeatEnabled = true;
+
+bool skillRepeatIsEnabled()
+{
+    return gSkillRepeatEnabled;
+}
+
+void skillRepeatSetEnabled(bool enabled)
+{
+    gSkillRepeatEnabled = enabled;
+}
+
 // skill_use
 // 0x4AAD08
 int skillUse(Object* obj, Object* target, Skill skill, int skillBonus)

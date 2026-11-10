@@ -176,6 +176,11 @@ MuiRect muiPlacePopup(MuiContext& ui, const MuiRect& anchor, const MuiRect& avoi
 // Screen rect of [object] (output pixels) as the world view shows it.
 bool muiObjectRect(Object* object, MuiRect* rect);
 
+// The game's watch (wait cursor, animated) over [target] while a skill is
+// used again and again (see `objectUseSkillOn`).
+void muiSkillWaitShow(Object* target);
+void muiSkillWaitHide();
+
 // Where popups for a skill or item used on [target] stand: next to the
 // target, or next to HUD element [fallback] (no target).
 void muiPopupAnchor(Object* target, HudElementId fallback, MuiRect* anchor, MuiRect* avoid);
